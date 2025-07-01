@@ -1,0 +1,1385 @@
+/**
+ * Panel de Control para Gestión de Colaboradores
+ * Versión optimizada
+ */
+
+// ---------- CONFIGURACIÓN GLOBAL ----------
+// ---------- CONFIGURACIÓN GLOBAL ----------
+const CONFIG = {
+  SHEET_NAMES: {
+    DATABASE: "Base de Datos",
+    SUMMARY: "Resumen"
+  },
+  DATE_FORMAT: "dd/MM/yyyy",
+  HEADERS: {
+    año: "Año",
+    fIngreso: "F. Ingreso",
+    fRetiro: "F. Retiro",
+    dias: "Días",
+    identificacion: "Identificación",
+    nombre: "Apellidos y Nombres",
+    tipoContrato: "Tipo de Contrato",
+    salario: "Salario Devengado",
+    area: "Área",
+    cargo: "Cargo",
+    asignacion: "Asignación Académica",
+    situacion: "Situación"
+  },
+  PROPS: {
+    CURRENT_FILTERS: "filtrosActuales",
+    FILTERED_DATA: "datosFiltrados",
+    SELECTED_COLUMNS: "columnasSeleccionadasGuardadas"
+  },
+  DEFAULT_COLUMNS: ["identificacion", "nombre", "fIngreso", "fRetiro", "dias"],
+  COLORS: {
+    HEADER: "#1a73e8",
+    ALT_ROW: "#f3f3f3",
+    SUMMARY_ROW: "#e8f0fe",
+    WHITE: "white"
+  },
+  COLUMNS_MAP: {
+    // Mapeo de nombres de columnas a índices (base 0)
+    año: 0,
+    fIngreso: 1,
+    fRetiro: 2,
+    dias: 3,
+    identificacion: 4,
+    nombre: 5,
+    tipoContrato: 6,
+    salario: 7,
+    area: 8,
+    cargo: 9,
+    asignacion: 10,
+    situacion: 11
+  },
+  DEFAULT_VALIDATION_OPTIONS: {
+    areas: [
+      "Administrativa", 
+      "Académica", 
+      "Investigación", 
+      "Otra área", 
+      "Servicios"
+    ],
+    situaciones: [
+      "Activo", 
+      "Retirado", 
+      "En proceso", 
+      "Suspendido", 
+      "Otra situación"
+    ]
+  }
+};
+
+/**
+ * Crea el menú al abrir la hoja de cálculo
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('📊 Panel de Control')
+    .addItem('👤 Agregar Colaborador', 'mostrarFormularioColaborador')
+    .addItem('👥 Agregar Varios Colaboradores', 'mostrarFormularioVariosColaboradores') // Nueva opción
+    .addItem('👥👥 Carga Masiva de Colaboradores', 'mostrarFormularioCargaMasiva')
+    .addItem('🔍 Filtros del Resumen', 'mostrarDialogoFiltros')
+    .addItem('📋 Seleccionar Columnas', 'mostrarSelectorColumnas')
+    .addToUi();
+}
+
+// ---------- UTILITARIOS ----------
+
+/**
+ * Obtiene las hojas de trabajo necesarias
+ * @returns {Object} Un objeto con las hojas de trabajo
+ */
+function getSheets() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  return {
+    database: ss.getSheetByName(CONFIG.SHEET_NAMES.DATABASE),
+    summary: ss.getSheetByName(CONFIG.SHEET_NAMES.SUMMARY),
+    spreadsheet: ss
+  };
+}
+
+/**
+ * Detecta y devuelve el formato de fecha regional apropiado
+ * @returns {string} Formato de fecha regional
+ */
+function obtenerFormatoFechaRegional() {
+  try {
+    const locale = Session.getActiveUserLocale();
+    
+    // Ajustar formato según región
+    switch(locale) {
+      case 'en_US': return "M/d/yyyy";
+      case 'es_ES':
+      case 'es_CO': return "dd/MM/yyyy";
+      case 'en_GB': return "dd/MM/yyyy";
+      default: return "dd/MM/yyyy";  // Formato predeterminado
+    }
+  } catch (e) {
+    console.error("Error al obtener formato regional:", e);
+    return "dd/MM/yyyy";  // Formato predeterminado en caso de error
+  }
+}
+
+/**
+ * Convierte un string de fecha en objeto Date
+ * @param {string|Date} fecha - Fecha en formato string o Date
+ * @returns {Date|null} Objeto Date o null si la fecha es inválida
+ */
+function parseDate(fecha) {
+  if (!fecha) return null;
+  
+  // Si ya es un objeto Date, retornarlo
+  if (fecha instanceof Date && !isNaN(fecha)) return fecha;
+  
+  // Si es string, convertir según formato
+  if (typeof fecha === 'string') {
+    // Eliminar espacios en blanco
+    fecha = fecha.trim();
+    
+    if (fecha.includes('/')) {
+      const partes = fecha.split('/');
+      if (partes.length === 3 && partes[2] && partes[2].length >= 4) {
+        // Asumimos formato DD/MM/YYYY
+        return new Date(parseInt(partes[2]), parseInt(partes[1]) - 1, parseInt(partes[0]));
+      }
+    }
+    
+    // Tratar de detectar otros formatos comunes
+    // Formato ISO (YYYY-MM-DD)
+    if (/^\d{4}-\d{2}-\d{2}/.test(fecha)) {
+      return new Date(fecha);
+    }
+    
+    // Formato MM/DD/YYYY (común en EE.UU.)
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(fecha)) {
+      const partes = fecha.split('/');
+      // Asumiendo MM/DD/YYYY
+      return new Date(parseInt(partes[2]), parseInt(partes[0]) - 1, parseInt(partes[1]));
+    }
+    
+    // Último intento con el formato predeterminado de JS
+    const fechaParsed = new Date(fecha);
+    if (!isNaN(fechaParsed)) return fechaParsed;
+  }
+  
+  return null;
+}
+
+/**
+ * Verifica si una fecha está completamente especificada
+ * @param {string|Date} fecha - Fecha a verificar
+ * @returns {boolean} true si la fecha está completa
+ */
+function fechaCompleta(fecha) {
+  if (!fecha) return false;
+  
+  if (typeof fecha === 'string') {
+    // Eliminar espacios en blanco
+    fecha = fecha.trim();
+    
+    if (fecha.includes('/')) {
+      const partes = fecha.split('/');
+      return partes.length === 3 && partes[2] && partes[2].length >= 4;
+    }
+    
+    // Verificar formato ISO
+    if (/^\d{4}-\d{2}-\d{2}/.test(fecha)) {
+      return true;
+    }
+  }
+  
+  // Si es Date y es válida
+  return fecha instanceof Date && !isNaN(fecha);
+}
+
+/**
+ * Calcula los días entre dos fechas o hasta hoy
+ * @param {Date} fechaInicio - Fecha de inicio
+ * @param {Date} fechaFin - Fecha de fin (opcional)
+ * @returns {number} Número de días
+ */
+function calcularDias(fechaInicio, fechaFin) {
+  if (!fechaInicio || isNaN(fechaInicio)) return 0;
+  
+  // Si no hay fecha fin, calcular hasta hoy
+  const fechaFinal = (fechaFin && !isNaN(fechaFin)) ? fechaFin : new Date();
+  
+  // Calcular diferencia y ajustar para contar inclusivo
+  const diffTime = Math.abs(fechaFinal - fechaInicio);
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  
+  return diffDays + 1; // +1 para contar inclusivo
+}
+
+/**
+ * Obtiene todas las opciones para validaciones de datos
+ * @returns {Object} Opciones para validación
+ */
+function obtenerOpcionesValidacion() {
+  try {
+    const { database } = getSheets();
+    const datos = database.getRange("B6:M" + database.getLastRow()).getValues();
+    const añoActual = new Date().getFullYear();
+    
+    // Función para extraer valores únicos y limpios
+    function unicosLimpios(datos, columna) {
+      return [...new Set(
+        datos
+          .map(row => typeof row[columna] === 'string' ? row[columna].trim() : row[columna])
+          .filter(Boolean)
+      )].sort();
+    }
+    
+    // Extraer datos
+    const añosExistentes = unicosLimpios(datos, 0);
+    const areas = unicosLimpios(datos, 8);
+    const situaciones = unicosLimpios(datos, 11);
+    
+    // Asegurar que estén los años actuales y futuros
+    const añosConFuturos = new Set([
+      ...añosExistentes,
+      añoActual.toString(), 
+      (añoActual + 1).toString(), 
+      (añoActual + 2).toString()
+    ]);
+    
+    // Ordenar de mayor a menor
+    const añosUnicos = Array.from(añosConFuturos).sort((a, b) => b - a);
+    
+    // Valores predeterminados o existentes
+    return {
+      areas: areas.length ? areas : CONFIG.DEFAULT_VALIDATION_OPTIONS.areas,
+      situaciones: situaciones.length ? situaciones : CONFIG.DEFAULT_VALIDATION_OPTIONS.situaciones,
+      años: añosUnicos.length ? añosUnicos : [
+        (añoActual + 2).toString(),
+        (añoActual + 1).toString(),
+        añoActual.toString(), 
+        (añoActual - 1).toString()
+      ]
+    };
+  } catch (e) {
+    console.error("Error al obtener opciones de validación:", e);
+    
+    const añoActual = new Date().getFullYear();
+    return {
+      areas: CONFIG.DEFAULT_VALIDATION_OPTIONS.areas,
+      situaciones: CONFIG.DEFAULT_VALIDATION_OPTIONS.situaciones,
+      años: [
+        (añoActual + 2).toString(),
+        (añoActual + 1).toString(),
+        añoActual.toString(), 
+        (añoActual - 1).toString()
+      ]
+    };
+  }
+}
+
+/**
+ * Obtiene datos para autocompletado
+ * @returns {Object} Datos para autocompletado
+ */
+function obtenerDatosAutocompletado() {
+  const { database } = getSheets();
+  const datos = database.getRange("B6:M" + database.getLastRow()).getValues();
+  const añoActual = new Date().getFullYear();
+  
+  // Función para extraer valores únicos
+  const unicosOrdenados = (datos, columna) => 
+    [...new Set(datos.map(row => row[columna]).filter(Boolean))].sort();
+  
+  // Extraer datos
+  const areas = unicosOrdenados(datos, 8);
+  const cargos = unicosOrdenados(datos, 9);
+  const tiposContrato = unicosOrdenados(datos, 6);
+  const situaciones = unicosOrdenados(datos, 11);
+  const añosExistentes = unicosOrdenados(datos, 0);
+  
+  // Asegurar años actuales y futuros
+  const añosTotales = new Set([
+    ...añosExistentes,
+    añoActual.toString(),
+    (añoActual + 1).toString(),
+    (añoActual + 2).toString()
+  ]);
+  
+  return {
+    areas,
+    cargos,
+    tiposContrato,
+    situaciones,
+    años: Array.from(añosTotales).sort((a, b) => b - a)
+  };
+}
+
+/**
+ * Recupera las columnas seleccionadas almacenadas
+ * @returns {Array} Columnas seleccionadas
+ */
+function recuperarColumnasSeleccionadas() {
+  const columnasGuardadas = PropertiesService.getScriptProperties()
+    .getProperty(CONFIG.PROPS.SELECTED_COLUMNS);
+  
+  if (!columnasGuardadas) {
+    return CONFIG.DEFAULT_COLUMNS;
+  }
+  
+  try {
+    return JSON.parse(columnasGuardadas);
+  } catch (e) {
+    return CONFIG.DEFAULT_COLUMNS;
+  }
+}
+
+// ---------- FORMULARIO DE varios colaboradores ----------
+
+function mostrarFormularioVariosColaboradores() {
+  const htmlOutput = HtmlService.createHtmlOutputFromFile('variosColaboradores')
+    .setWidth(650)
+    .setHeight(700)
+    .setSandboxMode(HtmlService.SandboxMode.IFRAME)
+    .setTitle('Agregar Varios Colaboradores');
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '👥 Agregar Varios Colaboradores');
+}
+
+/**
+ * Obtiene datos iniciales para el formulario de varios colaboradores
+ */
+function obtenerDatosIniciales() {
+  try {
+    return {
+      formatoFecha: obtenerFormatoFechaRegional(),
+      opciones: obtenerOpcionesValidacion(),
+      datosAutocompletado: obtenerDatosAutocompletado(),
+      success: true
+    };
+  } catch (e) {
+    return {
+      success: false,
+      message: `Error al obtener datos iniciales: ${e.toString()}`
+    };
+  }
+}
+
+/**
+ * Procesa la adición de varios colaboradores
+ * @param {Array} colaboradores - Array de objetos con datos de colaboradores
+ * @returns {Object} Resultado de la operación
+ */
+function agregarVariosColaboradores(colaboradores) {
+  const { database } = getSheets();
+  let ultimaFila = database.getLastRow() + 1;
+  const formatoFecha = obtenerFormatoFechaRegional();
+  const opcionesValidacion = obtenerOpcionesValidacion();
+  const resultados = {
+    exito: [],
+    errores: []
+  };
+  
+  // Procesar cada colaborador
+  colaboradores.forEach((data, index) => {
+    try {
+      // Verificar y corregir tipos de datos
+      data.fIngreso = data.fIngreso || null;
+      data.fRetiro = data.fRetiro || null;
+      
+      // Parsear fechas
+      let fechaIngreso = parseDate(data.fIngreso);
+      let fechaRetiro = parseDate(data.fRetiro);
+      
+      // Verificar si las fechas están completas
+      const ingresaCompleta = fechaCompleta(data.fIngreso);
+      const retiroCompleta = fechaCompleta(data.fRetiro);
+      
+      // Validar fechas
+      if (ingresaCompleta && retiroCompleta && fechaIngreso && fechaRetiro) {
+        if (fechaRetiro < fechaIngreso) {
+          resultados.errores.push({
+            indice: index,
+            nombre: data.nombre,
+            mensaje: "La fecha de retiro no puede ser anterior a la fecha de ingreso"
+          });
+          return; // Continuar con el siguiente colaborador
+        }
+      }
+      
+      // Calcular días trabajados
+      let diasTrabajados = data.dias || 0;
+      if (fechaIngreso) {
+        diasTrabajados = calcularDias(fechaIngreso, fechaRetiro);
+      }
+      
+      // Validar campos obligatorios
+      if (!data.año || !data.identificacion || !data.nombre || !data.area || !data.situacion) {
+        resultados.errores.push({
+          indice: index,
+          nombre: data.nombre || `Colaborador ${index + 1}`,
+          mensaje: "Faltan campos obligatorios: Año, Identificación, Nombre, Área y Situación son requeridos"
+        });
+        return; // Continuar con el siguiente colaborador
+      }
+      
+      // Preparar fila de datos
+      const fila = [
+        data.año,             // Año (col B)
+        fechaIngreso,         // Fecha de ingreso (col C)
+        fechaRetiro,          // Fecha de retiro (col D)
+        diasTrabajados,       // Días (col E)
+        data.identificacion,  // Identificación (col F)
+        data.nombre,          // Nombre (col G)
+        data.tipoContrato,    // Tipo de contrato (col H)
+        Number(data.salario || 0), // Salario (col I)
+        data.area,            // Área (col J)
+        data.cargo,           // Cargo (col K)
+        data.asignacion,      // Asignación académica (col L)
+        data.situacion        // Situación (col M)
+      ];
+      
+      // Insertar datos
+      database.getRange(ultimaFila, 2, 1, fila.length).setValues([fila]);
+      
+      // Aplicar formatos para fechas - Explícitamente formatear las celdas de fechas
+      if (fechaIngreso) {
+        database.getRange(ultimaFila, 3).setNumberFormat(formatoFecha);
+      }
+      
+      if (fechaRetiro) {
+        database.getRange(ultimaFila, 4).setNumberFormat(formatoFecha);
+      }
+      
+      // Formato numérico
+      database.getRange(ultimaFila, 9).setNumberFormat("#,##0"); // Salario
+      database.getRange(ultimaFila, 5).setNumberFormat("#,##0"); // Días
+      
+      // Aplicar validaciones de datos
+      const validaciones = [
+        { columna: 2, opciones: opcionesValidacion.años },           // Año (B)
+        { columna: 10, opciones: opcionesValidacion.areas },         // Área (J)
+        { columna: 13, opciones: opcionesValidacion.situaciones }    // Situación (M)
+      ];
+
+      validaciones.forEach(val => {
+        const rangoVal = database.getRange(ultimaFila, val.columna);
+        
+        // Configurar validación dropdown
+        const regla = SpreadsheetApp.newDataValidation()
+          .requireValueInList(val.opciones, true)
+          .setAllowInvalid(false)
+          .build();
+        
+        rangoVal.setDataValidation(regla)
+                .setHorizontalAlignment("center");
+      });
+
+      // Bordes para mejor visualización
+      database.getRange(ultimaFila, 2, 1, fila.length).setBorder(
+        true, true, true, true, false, false, 
+        "#D3D3D3", SpreadsheetApp.BorderStyle.SOLID
+      );
+      
+      // Registrar éxito
+      resultados.exito.push({
+        indice: index,
+        nombre: data.nombre,
+        identificacion: data.identificacion
+      });
+      
+      // Incrementar fila para el siguiente colaborador
+      ultimaFila++;
+      
+    } catch (e) {
+      // Registrar error
+      resultados.errores.push({
+        indice: index,
+        nombre: data.nombre || `Colaborador ${index + 1}`,
+        mensaje: e.toString()
+      });
+    }
+  });
+  
+  // Forzar una actualización visual
+  SpreadsheetApp.flush();
+  
+  return {
+    success: resultados.exito.length > 0,
+    message: `Se agregaron ${resultados.exito.length} colaboradores exitosamente. Errores: ${resultados.errores.length}`,
+    detalles: resultados
+  };
+}
+// ---------- FORMULARIO DE COLABORADOR ----------
+
+/**
+ * Muestra el formulario para agregar un colaborador
+ */
+function mostrarFormularioColaborador() {
+  const htmlOutput = HtmlService.createHtmlOutputFromFile('formulario')
+    .setWidth(450)
+    .setHeight(600)
+    .setSandboxMode(HtmlService.SandboxMode.IFRAME)
+    .setTitle('Agregar Colaborador');
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '👤 Agregar Colaborador');
+}
+
+/**
+ * Agrega un colaborador a la base de datos
+ * @param {Object} data - Datos del colaborador
+ * @returns {Object} Resultado de la operación
+ */
+function agregarColaborador(data) {
+  const { database } = getSheets();
+  const nuevaFila = database.getLastRow() + 1;
+  const mensajesValidacion = [];
+  
+  // Parsear fechas
+  let fechaIngreso = parseDate(data.fIngreso);
+  let fechaRetiro = parseDate(data.fRetiro);
+  
+  // Verificar si las fechas están completas
+  const ingresaCompleta = fechaCompleta(data.fIngreso);
+  const retiroCompleta = fechaCompleta(data.fRetiro);
+  
+  // Validar fechas solo si ambas están completas
+  if (ingresaCompleta && retiroCompleta && fechaIngreso && fechaRetiro) {
+    if (fechaRetiro < fechaIngreso) {
+      return {
+        success: false, 
+        message: "Error: La fecha de retiro no puede ser anterior a la fecha de ingreso."
+      };
+    }
+  } else if ((ingresaCompleta && !retiroCompleta && fechaRetiro) || 
+             (!ingresaCompleta && retiroCompleta && fechaIngreso)) {
+    mensajesValidacion.push("Aviso: Por favor complete ambas fechas correctamente.");
+  }
+  
+  // Calcular días trabajados
+  let diasTrabajados = data.dias || 0;
+  if (fechaIngreso) {
+    diasTrabajados = calcularDias(fechaIngreso, fechaRetiro);
+  }
+  
+  // Validar campos obligatorios
+  if (!data.año || !data.identificacion || !data.nombre || !data.area || !data.situacion) {
+    return {
+      success: false,
+      message: "Error: Faltan campos obligatorios: Año, Identificación, Nombre, Área y Situación son requeridos."
+    };
+  }
+  
+  // Preparar datos para inserción
+  const fila = [
+    data.año,             // Año (col B)
+    fechaIngreso,         // Fecha de ingreso (col C)
+    fechaRetiro,          // Fecha de retiro (col D)
+    diasTrabajados,       // Días (col E)
+    data.identificacion,  // Identificación (col F)
+    data.nombre,          // Nombre (col G)
+    data.tipoContrato,    // Tipo de contrato (col H)
+    Number(data.salario || 0), // Salario (col I)
+    data.area,            // Área (col J)
+    data.cargo,           // Cargo (col K)
+    data.asignacion,      // Asignación académica (col L)
+    data.situacion        // Situación (col M)
+  ];
+  
+  // Insertar datos
+  const rango = database.getRange(nuevaFila, 2, 1, fila.length);
+  rango.setValues([fila]);
+  
+  // Aplicar formatos
+  const formatoFecha = obtenerFormatoFechaRegional();
+  
+  if (fechaIngreso) {
+    database.getRange(nuevaFila, 3).setNumberFormat(formatoFecha);
+  }
+  
+  if (fechaRetiro) {
+    database.getRange(nuevaFila, 4).setNumberFormat(formatoFecha);
+  }
+  
+  // Formato numérico
+  database.getRange(nuevaFila, 9).setNumberFormat("#,##0"); // Salario
+  database.getRange(nuevaFila, 5).setNumberFormat("#,##0"); // Días
+  
+  // Obtener opciones de validación
+  const opcionesValidacion = obtenerOpcionesValidacion();
+  
+  // Aplicar validaciones de datos
+  const validaciones = [
+    { columna: 2, opciones: opcionesValidacion.años },           // Año (B)
+    { columna: 10, opciones: opcionesValidacion.areas },         // Área (J)
+    { columna: 13, opciones: opcionesValidacion.situaciones }    // Situación (M)
+  ];
+
+  validaciones.forEach(val => {
+    const rangoVal = database.getRange(nuevaFila, val.columna);
+    
+    // Configurar validación dropdown
+    const regla = SpreadsheetApp.newDataValidation()
+      .requireValueInList(val.opciones, true)
+      .setAllowInvalid(false)
+      .build();
+    
+    rangoVal.setDataValidation(regla)
+            .setHorizontalAlignment("center");
+  });
+
+  // Bordes para mejor visualización
+  database.getRange(nuevaFila, 2, 1, fila.length).setBorder(
+    true, true, true, true, false, false, 
+    "#D3D3D3", SpreadsheetApp.BorderStyle.SOLID
+  );
+
+  // Mensaje de éxito
+  let mensaje = "Colaborador agregado exitosamente con los formatos adecuados";
+  if (mensajesValidacion.length > 0) {
+    mensaje += ". " + mensajesValidacion.join(" ");
+  }
+  
+  return {success: true, message: mensaje};
+}
+
+// ---------- CARGA MASIVA DE COLABORADORES ----------
+
+/**
+ * Muestra el formulario para carga masiva
+ */
+function mostrarFormularioCargaMasiva() {
+  const htmlOutput = HtmlService.createHtmlOutputFromFile('cargaMasiva')
+    .setWidth(600)
+    .setHeight(650)
+    .setSandboxMode(HtmlService.SandboxMode.IFRAME)
+    .setTitle('Carga Masiva de Colaboradores');
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '👥 Carga Masiva de Colaboradores');
+}
+
+/**
+ * Procesa la carga masiva de colaboradores
+ * @param {Array} datosColaboradores - Datos de colaboradores a insertar
+ * @returns {Object} Resultado de la operación
+ */
+function procesarCargaMasiva(datosColaboradores) {
+  const { database } = getSheets();
+  const ultimaFila = database.getLastRow() + 1;
+  
+  // Verificar que haya datos
+  if (!datosColaboradores || !datosColaboradores.length) {
+    return {
+      success: false,
+      message: "No se encontraron datos para procesar"
+    };
+  }
+  
+  try {
+    // Preparar datos para inserción masiva
+    const filas = datosColaboradores.map(data => [
+      data.año,
+      parseDate(data.fIngreso),
+      parseDate(data.fRetiro),
+      Number(data.dias || 0),
+      data.identificacion,
+      data.nombre,
+      data.tipoContrato,
+      Number(data.salario || 0),
+      data.area,
+      data.cargo,
+      data.asignacion,
+      data.situacion
+    ]);
+    
+    // Insertar todos los datos de una vez
+    if (filas.length > 0) {
+      database.getRange(ultimaFila, 2, filas.length, filas[0].length).setValues(filas);
+      
+      // Aplicar formatos
+      const formatoFecha = obtenerFormatoFechaRegional();
+      
+      // Rango de fechas
+      database.getRange(ultimaFila, 3, filas.length, 1).setNumberFormat(formatoFecha); // Fecha ingreso
+      database.getRange(ultimaFila, 4, filas.length, 1).setNumberFormat(formatoFecha); // Fecha retiro
+      
+      // Formatos numéricos
+      database.getRange(ultimaFila, 5, filas.length, 1).setNumberFormat("#,##0"); // Días
+      database.getRange(ultimaFila, 9, filas.length, 1).setNumberFormat("#,##0"); // Salario
+    }
+    
+    return {
+      success: true, 
+      message: `Se agregaron ${filas.length} colaboradores exitosamente`
+    };
+  } catch (e) {
+    console.error("Error en procesamiento masivo:", e);
+    return {
+      success: false,
+      message: "Error al procesar la carga masiva: " + e.toString()
+    };
+  }
+}
+
+// ---------- FILTROS DEL RESUMEN ----------
+
+/**
+ * Muestra el diálogo de filtros
+ */
+function mostrarDialogoFiltros() {
+  const htmlOutput = HtmlService.createHtmlOutputFromFile('filtros')
+    .setWidth(450)
+    .setHeight(600)
+    .setSandboxMode(HtmlService.SandboxMode.IFRAME)
+    .setTitle('Filtros del Resumen');
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '🔍 Filtros del Resumen');
+}
+
+/**
+ * Aplica filtros a los datos
+ * @param {Object} filtros - Criterios de filtrado
+ * @returns {Object} Resultado de la operación
+ */
+function aplicarFiltros(filtros) {
+  const { database, summary } = getSheets();
+  const datosTodos = database.getRange("B6:M" + database.getLastRow()).getValues();
+
+  // Guardar filtros en propiedades
+  PropertiesService.getScriptProperties().setProperty(
+    CONFIG.PROPS.CURRENT_FILTERS, 
+    JSON.stringify(filtros)
+  );
+
+  // Limpiar la hoja resumen
+  const lastRow = summary.getLastRow();
+  if (lastRow > 1) summary.getRange(2, 1, lastRow - 1, 10).clearContent();
+
+  // Recuperar columnas seleccionadas
+  const columnasSeleccionadas = recuperarColumnasSeleccionadas();
+
+  // Cálculo de total de días por identificación en todos los años
+  const totalDiasPorPersona = datosTodos.reduce((acc, fila) => {
+    const id = fila[4]?.toString();
+    if (id) {
+      if (!acc[id]) acc[id] = 0;
+      acc[id] += Number(fila[3] || 0);
+    }
+    return acc;
+  }, {});
+
+  // Filtrar por días totales (todas las identificaciones que cumplen)
+  const idsQueCumplenDias = new Set();
+  if (filtros.diasMin || filtros.diasMax) {
+    Object.entries(totalDiasPorPersona).forEach(([id, dias]) => {
+      const cumpleDiasMin = !filtros.diasMin || dias >= Number(filtros.diasMin);
+      const cumpleDiasMax = !filtros.diasMax || dias <= Number(filtros.diasMax);
+      
+      if (cumpleDiasMin && cumpleDiasMax) {
+        idsQueCumplenDias.add(id);
+      }
+    });
+  }
+
+  // Aplicar todos los filtros
+  const filtrados = datosTodos.filter(fila => {
+    // Helper para búsqueda parcial insensible a mayúsculas
+    const incluye = (valor, busqueda) => 
+      valor && busqueda ? 
+        String(valor).toLowerCase().includes(String(busqueda).toLowerCase()) : 
+        !busqueda;
+    
+    // Verificar cada condición
+    const coincideAño = !filtros.año || fila[0] == filtros.año;
+    const coincideEstado = incluye(fila[11], filtros.situacion);
+    const coincideArea = incluye(fila[8], filtros.area);
+    const coincideID = incluye(fila[4], filtros.id);
+    const coincideNombre = incluye(fila[5], filtros.nombre);
+    const coincideCargo = incluye(fila[9], filtros.cargo);
+    const coincideTipoContrato = incluye(fila[6], filtros.tipoContrato);
+    const coincideAsignacion = incluye(fila[10], filtros.asignacion);
+    
+    // Filtros numéricos
+    const salario = Number(fila[7] || 0);
+    const coincideSalarioMin = !filtros.salarioMin || salario >= Number(filtros.salarioMin);
+    const coincideSalarioMax = !filtros.salarioMax || salario <= Number(filtros.salarioMax);
+    
+    // Filtros de fechas
+    let coincideFechaInicio = true;
+    if (filtros.fechaInicio) {
+      const fechaIngreso = fila[1] instanceof Date ? fila[1] : new Date(fila[1]);
+      const fechaInicioObj = new Date(filtros.fechaInicio);
+      coincideFechaInicio = fechaIngreso >= fechaInicioObj;
+    }
+    
+    let coincideFechaFin = true;
+    if (filtros.fechaFin) {
+      const fechaRetiro = fila[2] instanceof Date ? fila[2] : new Date(fila[2]);
+      const fechaFinObj = new Date(filtros.fechaFin);
+      coincideFechaFin = fechaRetiro <= fechaFinObj;
+    }
+    
+    // Verificar días basado en total acumulado
+    const coincideDias = (!filtros.diasMin && !filtros.diasMax) || 
+                         (fila[4] && idsQueCumplenDias.has(fila[4].toString()));
+    
+    // Todos los filtros deben coincidir
+    return coincideAño && coincideEstado && coincideArea && coincideID &&
+           coincideNombre && coincideCargo && coincideTipoContrato && coincideAsignacion &&
+           coincideSalarioMin && coincideSalarioMax && 
+           coincideFechaInicio && coincideFechaFin &&
+           coincideDias;
+  });
+
+  // Guardar datos filtrados
+  PropertiesService.getScriptProperties().setProperty(
+    CONFIG.PROPS.FILTERED_DATA, 
+    JSON.stringify(filtrados)
+  );
+
+  // Mostrar columnas seleccionadas
+  return mostrarColumnasSeleccionadas(columnasSeleccionadas);
+}
+
+// ---------- SELECTOR DE COLUMNAS ----------
+
+/**
+ * Muestra el selector de columnas
+ */
+function mostrarSelectorColumnas() {
+  const htmlOutput = HtmlService.createHtmlOutputFromFile('selectorColumnas')
+    .setWidth(450)
+    .setHeight(550)
+    .setSandboxMode(HtmlService.SandboxMode.IFRAME)
+    .setTitle('Seleccionar Columnas');
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '📋 Seleccionar Columnas');
+}
+
+/**
+ * Muestra las columnas seleccionadas en la hoja resumen
+ * @param {Array} columnasSeleccionadas - Columnas a mostrar
+ * @returns {Object} Estadísticas resultantes
+ */
+function mostrarColumnasSeleccionadas(columnasSeleccionadas) {
+  // Guardar columnas seleccionadas
+  PropertiesService.getScriptProperties().setProperty(
+    CONFIG.PROPS.SELECTED_COLUMNS, 
+    JSON.stringify(columnasSeleccionadas)
+  );
+
+  const { summary } = getSheets();
+  const datosFiltrados = JSON.parse(
+    PropertiesService.getScriptProperties().getProperty(CONFIG.PROPS.FILTERED_DATA) || "[]"
+  );
+
+  // Limpiar contenido y formato previo
+  const lastRow = summary.getLastRow();
+  if (lastRow > 1) {
+    summary.getRange(2, 1, lastRow - 1, summary.getLastColumn()).clearContent();
+  }
+  summary.clearFormats();
+
+  // Nombres de encabezados
+  const headersAMostrar = columnasSeleccionadas.map(col => CONFIG.HEADERS[col] || col);
+  
+  // Establecer encabezados
+  const headerRange = summary.getRange(1, 1, 1, headersAMostrar.length);
+  headerRange.setValues([headersAMostrar]);
+  
+  // Formatear encabezados
+  headerRange.setBackground(CONFIG.COLORS.HEADER)
+             .setFontColor(CONFIG.COLORS.WHITE)
+             .setFontWeight("bold")
+             .setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+
+  // Preparar filas de datos
+  const filas = datosFiltrados.map(fila => {
+    return columnasSeleccionadas.map(col => {
+      const indice = CONFIG.COLUMNS_MAP[col];
+      const valor = fila[indice];
+      
+      // Formatear según tipo de columna
+      if (col === "año") {
+        return valor ? String(valor) : "";
+      }
+      
+      if (col === "fIngreso" || col === "fRetiro") {
+        return valor ? (valor instanceof Date ? valor : new Date(valor)) : "";
+      }
+      
+      return valor;
+    });
+  });
+
+  // Si hay datos, mostrarlos
+  if (filas.length) {
+    const dataRange = summary.getRange(2, 1, filas.length, columnasSeleccionadas.length);
+    dataRange.setValues(filas);
+    
+    // Aplicar bordes
+    dataRange.setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+    
+    // Formato para filas alternas
+    for (let i = 0; i < filas.length; i++) {
+      if (i % 2 === 0) {
+        summary.getRange(2 + i, 1, 1, columnasSeleccionadas.length)
+          .setBackground(CONFIG.COLORS.ALT_ROW);
+      }
+    }
+    
+    // Formato para columnas numéricas
+    columnasSeleccionadas.forEach((columna, indice) => {
+      if (columna === "dias" || columna === "salario") {
+        summary.getRange(2, indice + 1, filas.length, 1).setNumberFormat("#,##0");
+      }
+      
+      if (columna === "fIngreso" || columna === "fRetiro") {
+        summary.getRange(2, indice + 1, filas.length, 1).setNumberFormat(obtenerFormatoFechaRegional());
+      }
+    });
+  }
+
+  // Generar la tabla de resumen con el total de días por persona en TODOS los años
+  generarTablaResumenDias(hojaResumen, datosFiltrados, columnasSeleccionadas.length);
+  
+  // Retornar estadísticas para mostrar en la UI
+  return {
+    totalRegistros: filas.length,
+    columnasSeleccionadas: headersAMostrar
+  };
+}
+// ---------- VENTANA DE SELECCIÓN DE COLUMNAS ----------
+function mostrarSelectorColumnas() {
+  const htmlOutput = HtmlService.createHtmlOutputFromFile('selectorColumnas')
+    .setWidth(450)
+    .setHeight(550)
+    .setSandboxMode(HtmlService.SandboxMode.IFRAME)
+    .setTitle('Seleccionar Columnas');
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '📋 Seleccionar Columnas');
+}
+
+function mostrarColumnasSeleccionadas(columnasSeleccionadas) {
+  const hojaResumen = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Resumen");
+  const datosFiltrados = JSON.parse(PropertiesService.getScriptProperties().getProperty("datosFiltrados") || "[]");
+
+  // Limpiar contenido sin tocar encabezados
+  const lastRow = hojaResumen.getLastRow();
+  if (lastRow > 1) hojaResumen.getRange(2, 1, lastRow - 1, hojaResumen.getLastColumn()).clearContent();
+  
+  // Limpiamos todo el formato previo
+  hojaResumen.clearFormats();
+
+  const encabezadosMap = {
+    "año": 0,
+    "fIngreso": 1,
+    "fRetiro": 2,
+    "dias": 3,
+    "identificacion": 4,
+    "nombre": 5,
+    "tipoContrato": 6,
+    "salario": 7,
+    "area": 8,
+    "cargo": 9,
+    "asignacion": 10,
+    "situacion": 11
+  };
+
+  const headersAMostrar = columnasSeleccionadas.map(col => {
+    const nombres = {
+      "año": "Año",
+      "fIngreso": "F. Ingreso",
+      "fRetiro": "F. Retiro",
+      "dias": "Días",
+      "identificacion": "Identificación",
+      "nombre": "Apellidos y Nombres",
+      "tipoContrato": "Tipo de Contrato",
+      "salario": "Salario Devengado",
+      "area": "Área",
+      "cargo": "Cargo",
+      "asignacion": "Asignación Académica",
+      "situacion": "Situación"
+    };
+    return nombres[col] || col;
+  });
+  
+  // Establecemos los encabezados
+  const headerRange = hojaResumen.getRange(1, 1, 1, headersAMostrar.length);
+  headerRange.setValues([headersAMostrar]);
+  
+  // Formateamos los encabezados
+  headerRange.setBackground("#1a73e8") // Azul de Google
+             .setFontColor("white")
+             .setFontWeight("bold")
+             .setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+
+  // Aplicar formato y convertir fechas si es necesario
+  const filas = datosFiltrados.map(fila => {
+    return columnasSeleccionadas.map(col => {
+      const valor = fila[encabezadosMap[col]];
+      
+      // Corrección para la columna de año: devolver el año como texto
+      if (col === "año") {
+        return valor ? String(valor) : "";
+      }
+      
+      if (col === "fIngreso" || col === "fRetiro") {
+        return valor ? new Date(valor).toLocaleDateString("es-CO") : "";
+      }
+      return valor;
+    });
+  });
+
+  if (filas.length) {
+    const dataRange = hojaResumen.getRange(2, 1, filas.length, columnasSeleccionadas.length);
+    dataRange.setValues(filas);
+    
+    // Añadimos formato a los datos
+    dataRange.setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+    
+    // Formato especial para filas alternas
+    for (let i = 0; i < filas.length; i++) {
+      if (i % 2 === 0) {
+        hojaResumen.getRange(2 + i, 1, 1, columnasSeleccionadas.length)
+          .setBackground("#f3f3f3"); // Gris claro para filas alternas
+      }
+    }
+    
+    // Formato especial para columnas numéricas (días, salario)
+    for (let i = 0; i < columnasSeleccionadas.length; i++) {
+      const columna = columnasSeleccionadas[i];
+      if (columna === "dias" || columna === "salario") {
+        hojaResumen.getRange(2, i + 1, filas.length, 1).setNumberFormat("#,##0");
+      }
+    }
+  }
+
+  // Generar la tabla de resumen con el total de días por persona en TODOS los años
+  generarTablaResumenDias(hojaResumen, datosFiltrados, columnasSeleccionadas.length);
+  
+  // Retornar estadísticas para mostrar en la UI
+  return {
+    totalRegistros: filas.length,
+    columnasSeleccionadas: headersAMostrar
+  };
+}
+
+// FUNCIÓN: Para generar la tabla de resumen con el total de días
+function generarTablaResumenDias(hojaResumen, datosFiltrados, offsetColumna) {
+  const hojaDatos = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Base de Datos");
+  // Obtenemos todos los datos para calcular el total de días por persona
+  const todosLosDatos = hojaDatos.getRange("B6:M" + hojaDatos.getLastRow()).getValues();
+  
+  // Obtenemos las IDs de las personas que pasaron el filtro actual
+  const personasIDs = new Set();
+  datosFiltrados.forEach(fila => {
+    const id = fila[4]; // Índice de la columna de identificación
+    if (id) personasIDs.add(id.toString());
+  });
+  
+  // Si no hay personas filtradas, no mostramos la tabla
+  if (personasIDs.size === 0) {
+    Logger.log("No hay personas para mostrar en la tabla de resumen");
+    return;
+  }
+  
+  // Calculamos el total de días para cada persona en TODOS los años
+  const resumenDiasPorPersona = {};
+  
+  todosLosDatos.forEach(fila => {
+    const id = fila[4]?.toString(); // ID de la persona
+    const dias = Number(fila[3]) || 0; // Días trabajados
+    const nombre = fila[5]; // Nombre de la persona
+    const año = fila[0]; // Año del registro
+    
+    // Solo incluimos personas que pasaron el filtro actual
+    if (id && personasIDs.has(id)) {
+      if (!resumenDiasPorPersona[id]) {
+        resumenDiasPorPersona[id] = { 
+          nombre: nombre, 
+          diasTotal: 0,
+          años: new Set() // Registramos los años en los que tiene registros
+        };
+      }
+      // Sumamos los días trabajados en todos los años
+      resumenDiasPorPersona[id].diasTotal += dias;
+      if (año) resumenDiasPorPersona[id].años.add(año);
+    }
+  });
+  
+  // Convertimos el objeto a un array para escribirlo en la hoja
+  const datosTablaResumen = Object.entries(resumenDiasPorPersona).map(([id, info]) => {
+    const añosStr = Array.from(info.años).sort().join(", ");
+    return [id, info.nombre, info.diasTotal, añosStr];
+  });
+  
+  // Definimos el inicio de la tabla de resumen (después de las columnas seleccionadas)
+  const inicioCol = offsetColumna + 2;
+  
+  // Añadimos un título para la tabla resumen
+  hojaResumen.getRange(1, inicioCol, 1, 4).merge();
+  const tituloRange = hojaResumen.getRange(1, inicioCol, 1, 4);
+  tituloRange.setValue("RESUMEN TOTAL DE DÍAS TRABAJADOS");
+  tituloRange.setBackground("#1a73e8")
+             .setFontColor("white")
+             .setFontWeight("bold")
+             .setHorizontalAlignment("center")
+             .setVerticalAlignment("middle");
+  
+  // Escribimos los encabezados de la tabla de resumen
+  const headerRange = hojaResumen.getRange(2, inicioCol, 1, 4);
+  headerRange.setValues([["Identificación", "Nombre", "Total Días", "Años Trabajados"]]);
+  headerRange.setBackground("#4285f4")
+             .setFontColor("white")
+             .setFontWeight("bold")
+             .setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+  
+  // Escribimos los datos
+  if (datosTablaResumen.length > 0) {
+    const dataRange = hojaResumen.getRange(3, inicioCol, datosTablaResumen.length, 4);
+    dataRange.setValues(datosTablaResumen);
+    
+    // Formato para la tabla de resumen
+    dataRange.setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+    
+    // Formato para números
+    hojaResumen.getRange(3, inicioCol + 2, datosTablaResumen.length, 1).setNumberFormat("#,##0");
+    
+    // Formato para filas alternas
+    for (let i = 0; i < datosTablaResumen.length; i++) {
+      if (i % 2 === 0) {
+        hojaResumen.getRange(3 + i, inicioCol, 1, 4)
+          .setBackground("#e8f0fe"); // Azul muy claro para filas alternas
+      }
+    }
+    
+    // Total general al final
+    const totalDias = datosTablaResumen.reduce((sum, row) => sum + row[2], 0);
+    const totalRow = hojaResumen.getRange(3 + datosTablaResumen.length, inicioCol, 1, 4);
+    totalRow.setValues([["TOTAL", "", totalDias, ""]]);
+    totalRow.setBackground("#1a73e8")
+            .setFontColor("white")
+            .setFontWeight("bold");
+    hojaResumen.getRange(3 + datosTablaResumen.length, inicioCol + 2, 1, 1).setNumberFormat("#,##0");
+    
+    // Ajustar el ancho de las columnas
+    for (let i = 0; i < 4; i++) {
+      hojaResumen.autoResizeColumn(inicioCol + i);
+    }
+  } else {
+    Logger.log("No hay datos para mostrar en la tabla de resumen");
+  }
+}
+function obtenerOpcionesValidacion() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const hoja = ss.getSheetByName("Base de Datos");
+    const datos = hoja.getRange("B6:M" + hoja.getLastRow()).getValues();
+    const añoActual = new Date().getFullYear();
+    
+    // Función para limpiar y obtener valores únicos sin duplicados
+    function unicosLimpios(datos, columna) {
+      const unicos = new Set();
+      return datos
+        .map(row => {
+          const valor = row[columna];
+          return typeof valor === 'string' ? valor.trim() : valor;
+        })
+        .filter(valor => {
+          if (!valor || valor === '') return false;
+          if (unicos.has(valor)) return false;
+          unicos.add(valor);
+          return true;
+        })
+        .sort();
+    }
+    
+    // Extraer años existentes de la base de datos
+    const añosExistentes = unicosLimpios(datos, 0); // Columna de años (índice 0)
+    
+    // Asegurarse de que los años actuales y futuros estén incluidos
+    const añosConFuturos = new Set([
+      ...añosExistentes,
+      añoActual.toString(), 
+      (añoActual + 1).toString(), 
+      (añoActual + 2).toString()
+    ]);
+    
+    // Convertir a array y ordenar de mayor a menor (más reciente primero)
+    const añosUnicos = Array.from(añosConFuturos).sort((a, b) => b - a);
+    
+    // Extraer listas únicas para validación con limpieza
+    const areas = unicosLimpios(datos, 8);
+    const situaciones = unicosLimpios(datos, 11);
+    
+    // Valores predeterminados para áreas y situaciones
+    const valoresPredeterminados = {
+      areas: areas.length ? areas : [
+        "Administrativa", 
+        "Académica", 
+        "Investigación", 
+        "Otra área", 
+        "Servicios"
+      ],
+      situaciones: situaciones.length ? situaciones : [
+        "Activo", 
+        "Retirado", 
+        "En proceso", 
+        "Suspendido", 
+        "Otra situación"
+      ],
+      años: añosUnicos.length ? añosUnicos : [
+        (añoActual + 2).toString(),
+        (añoActual + 1).toString(),
+        añoActual.toString(), 
+        (añoActual - 1).toString()
+      ]
+    };
+    
+    // Registro de información para depuración
+    console.log("Opciones de validación generadas:");
+    console.log("Áreas: " + valoresPredeterminados.areas.join(", "));
+    console.log("Situaciones: " + valoresPredeterminados.situaciones.join(", "));
+    console.log("Años: " + valoresPredeterminados.años.join(", "));
+    
+    return valoresPredeterminados;
+  } catch (e) {
+    // Manejo de errores robusto
+    console.error("Error al obtener opciones de validación:", e);
+    
+    // Valores de respaldo completamente predeterminados
+    const añoActual = new Date().getFullYear();
+    return {
+      areas: [
+        "Administrativa", 
+        "Académica", 
+        "Investigación", 
+        "Otra área", 
+        "Servicios"
+      ],
+      situaciones: [
+        "Activo", 
+        "Retirado", 
+        "En proceso", 
+        "Suspendido", 
+        "Otra situación"
+      ],
+      años: [
+        (añoActual + 2).toString(),
+        (añoActual + 1).toString(),
+        añoActual.toString(), 
+        (añoActual - 1).toString()
+      ]
+    };
+  }
+}
+
+// ---------- OBTENCIÓN DE DATOS PARA AUTOCOMPLETADO ----------
+function obtenerDatosAutocompletado() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const hoja = ss.getSheetByName("Base de Datos");
+  const datos = hoja.getRange("B6:M" + hoja.getLastRow()).getValues();
+  const añoActual = new Date().getFullYear();
+  
+  // Extraer listas únicas para autocompletado
+  const areas = [...new Set(datos.map(row => row[8]).filter(Boolean))].sort();
+  const cargos = [...new Set(datos.map(row => row[9]).filter(Boolean))].sort();
+  const tiposContrato = [...new Set(datos.map(row => row[6]).filter(Boolean))].sort();
+  const situaciones = [...new Set(datos.map(row => row[11]).filter(Boolean))].sort();
+
+  // Extraer años existentes de la base de datos
+  const añosExistentes = [...new Set(datos.map(row => row[0]).filter(Boolean))];
+  
+  // Asegurarse de incluir el año actual y los dos años siguientes
+  const añosTotales = new Set([
+    ...añosExistentes,
+    añoActual.toString(),
+    (añoActual + 1).toString(),
+    (añoActual + 2).toString()
+  ]);
+  
+  // Convertir a array y ordenar de mayor a menor
+  const años = Array.from(añosTotales).sort((a, b) => b - a);
+  
+  return {
+    areas: areas,
+    cargos: cargos,
+    tiposContrato: tiposContrato,
+    situaciones: situaciones,
+    años: años
+  };
+}
+
+// Función para recuperar las columnas seleccionadas
+function recuperarColumnasSeleccionadas() {
+  const columnasGuardadas = PropertiesService.getScriptProperties().getProperty("columnasSeleccionadasGuardadas");
+  
+  if (!columnasGuardadas) {
+    return ["identificacion", "nombre", "fIngreso", "fRetiro", "dias"];
+  }
+  
+  try {
+    return JSON.parse(columnasGuardadas);
+  } catch (e) {
+    return ["identificacion", "nombre", "fIngreso", "fRetiro", "dias"];
+  }
+}
+// Función para actualizar la sección de años en los formularios y filtros
+function actualizarReferenciaAños() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  try {
+    // 1. Modificar la función obtenerOpcionesValidacion()
+    const archivosScript = ScriptApp.getProjectTriggers().map(trigger => trigger.getHandlerFunction());
+    if (archivosScript.includes('obtenerOpcionesValidacion')) {
+      const funcionOriginal = obtenerOpcionesValidacion.toString();
+      const nuevaFuncion = funcionOriginal.replace(
+        /const añosUnicos = \[\.\.\.(.*?)\];/,
+        `const añosUnicos = [...new Set([
+          ...añosExistentes,
+          añoActual.toString(),
+          (añoActual + 1).toString(),
+          (añoActual + 2).toString()
+        ])];`
+      );
+      
+      // Reemplazar la función (esto es conceptual - en realidad necesitaría editar el script)
+      console.log("Función actualizada:", nuevaFuncion);
+    }
+    
+    // 2. Modificar la función obtenerDatosAutocompletado()
+    if (archivosScript.includes('obtenerDatosAutocompletado')) {
+      const funcionOriginal = obtenerDatosAutocompletado.toString();
+      const nuevaFuncion = funcionOriginal.replace(
+        /const años = \[\.\.\.(.*?)\];/,
+        `const añosExistentes = [...new Set(datos.map(row => row[0]).filter(Boolean))];
+  
+        // Añadir año actual y los dos siguientes si no existen
+        const añoActual = new Date().getFullYear();
+        const añosSiguientes = [añoActual, añoActual + 1, añoActual + 2].map(año => año.toString());
+        
+        // Combinar y eliminar duplicados
+        const años = [...new Set([...añosExistentes, ...añosSiguientes])].sort((a, b) => b - a);`
+      );
+      
+      // Reemplazar la función (esto es conceptual - en realidad necesitaría editar el script)
+      console.log("Función actualizada:", nuevaFuncion);
+    }
+    
+    // 3. Actualizar la hoja de configuración si existe
+    const hojaConfig = ss.getSheetByName("Configuración");
+    if (hojaConfig) {
+      const datosConfig = hojaConfig.getRange("A1:B" + hojaConfig.getLastRow()).getValues();
+      const filaAñosDisponibles = datosConfig.findIndex(row => row[0] === "Años Disponibles");
+      
+      if (filaAñosDisponibles >= 0) {
+        const añoActual = new Date().getFullYear();
+        const nuevosAños = `${añoActual-1},${añoActual},${añoActual+1},${añoActual+2}`;
+        hojaConfig.getRange(filaAñosDisponibles + 1, 2).setValue(nuevosAños);
+      }
+    }
+    
+    return {
+      success: true,
+      message: "Referencias de años actualizadas correctamente"
+    };
+  } catch (e) {
+    console.error("Error al actualizar referencias de años:", e);
+    return {
+      success: false,
+      message: "Error al actualizar referencias de años: " + e.toString()
+    };
+  }
+}
